@@ -36,6 +36,7 @@ end
 % apply LB and ZF
 dw = 1/sw; t = (0:dw:dw*(length(fid)-1))';
 if (filterFlag==1)
+    disp(' *** FID apodization applied! ***')
 	LB = 5;
 	GF = 0.15;	
 else
