@@ -1,8 +1,5 @@
 % example 
-
 clearvars
-
-
 global fidm sw sfrq1H H1offset
 load sampleData;
 
