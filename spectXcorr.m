@@ -1,17 +1,19 @@
-function [fidCor,valOut] = spectXcorr(fid,chemicalRange, filterFlag, plotFlag)
+function [fidCor,valOut] = spectXcorr(fid,chemicalRange, ref, filterFlag, plotFlag)
 %
-%function [fidCor,valOut] = spectXcorr(fid,chemicalRange, filterFlag, plotFlag)
+%function [fidCor,valOut] = spectXcorr(fid,chemicalRange, ref, filterFlag, plotFlag)
 % Simultaneous phase and frequency estimation using cross-correlation
 % in the frequency domain.  Method is termed spectral cross-correlation or SC
 %
 % Dinesh Deelchand, CMRR, University of Minnesota
-% 24 Oct 2023
+% 24 Oct 2023, 
+% Updated 03 July 2024
 %
 % INPUTS:
 %     fid           - signal in time domain with dimension [np, ave]
-%     chemicalRange - chemical shift range to align spectra, default is [1.8 3.5]
-%     filterFlag    - apply apodization (LB=5 and GF=0.12) to  data before SC
-%     plotFlag      - plot spectra and offsets (default 0)
+%     chemicalRange - chemical shift range to align spectra, default is [1.8 3.6]
+%     refSpec       - use 1st transient (='f') or mean all spectra ('m') as reference, default is 1
+%     filterFlag    - apply apodization (LB=5 and GF=0.12) to data before SC, default is off
+%     plotFlag      - plot spectra and offsets, default is 0
 %
 % OUTPUTS:
 %     fidCor - frequency and phase corrected FID
@@ -20,18 +22,24 @@ function [fidCor,valOut] = spectXcorr(fid,chemicalRange, filterFlag, plotFlag)
 
 global sw sfrq1H H1offset
 
-if (nargin<1)
+% check for input parameters 
+if nargin < 1
     error('Missing input FID signal. Aborting!');
-elseif (nargin==1)
-    chemicalRange = [1.8  3.5];
-	filterFlag = 0;
-    plotFlag = 0;
-elseif nargin==2
+end
+
+if nargin < 2
+    chemicalRange = [1.8 3.6];
+end
+if nargin < 3
+    ref = 'f';
+end
+if nargin < 4
     filterFlag = 0;
-    plotFlag = 0;
-elseif nargin==3
+end
+if nargin < 5
     plotFlag = 0;
 end
+
 
 % apply LB and ZF
 dw = 1/sw; t = (0:dw:dw*(length(fid)-1))';
@@ -55,7 +63,19 @@ end
 
 % FFT and mean
 spectfft = fftshift(fft(fidzf,[],1),1);
-spect_ref = spectfft(:,1); %use first spectrum instead of mean of spectra!
+if ~strcmp(ref, 'f') && ~strcmp(ref, 'm')
+    disp(' reference is out of range. Using 1st transient as reference')
+    ref = 'f';
+end
+
+% reference spectrum
+if (strcmp(ref,'f'))
+    SRef = spectfft(:,1); %use first spectrum 
+    disp(' Using 1st transient as reference')
+elseif (strcmp(ref,'m'))
+    SRef = mean(spectfft,2)/size(spectfft,2); %use mean spectra 
+    disp(' Using mean spectrum as reference')
+end
 
 % extract selected spectral region
 Refchemicalranges_ppm = chemicalRange;
@@ -65,46 +85,41 @@ deltaFnew = sw/(length(fidzf)-1);
 scale_ppm=f/(sfrq1H)+H1offset;
 findval1 = find(Refchemicalranges_ppm(1)-0.1 < scale_ppm & scale_ppm < Refchemicalranges_ppm(1)+0.1, 1, 'last' );
 findval2 = find(Refchemicalranges_ppm(2)-0.1 < scale_ppm & scale_ppm < Refchemicalranges_ppm(2)+0.1, 1 );
-region=findval2:findval1;
+region = findval2:findval1;
 
 ShiftCalc = zeros(1,nt);
 phaseCalc = zeros(1,nt);
 maxLag=round(np*(1+sifactor)/2);
+
 tic;
+
+%% reference scan correlation 
+CRef = xcorr(SRef(region), SRef(region),maxLag);
+[~,indx] = max(abs(CRef)); %freq ref
+ShiftRef = (indx - (maxLag+1)) * deltaFnew;
+indxRef = indx;
+phzRefx = angle(CRef); %phase ref
+ptsUse=5; %on each side
+phzRef = (phzRefx(indxRef-ptsUse:indxRef+ptsUse));
+ 
 for ix=1:nt
-    clear c
-    spect_use = (spectfft(:,ix));
-    c = xcorr(spect_ref(region), spect_use(region),maxLag);
+    clear Sn Cn
+    Sn = (spectfft(:,ix));
+    Cn = xcorr(SRef(region), Sn(region),maxLag);
     
     %% freq shift calc
-    [~,indx] = max(abs(c));
+    [~,indx] = max(abs(Cn));
     ShiftCalcHz = (indx - (maxLag+1)) * deltaFnew;
-    
-    if ix==1 %relative to first scan
-        ShiftRef = ShiftCalcHz;
-        ShiftCalc(ix) = 0;
-        indxRef=indx;
-    else
-        ShiftCalc(ix) = ShiftCalcHz - ShiftRef;
-    end
-    
+    ShiftCalc(ix) = ShiftCalcHz - ShiftRef;
     
     %% phase shift Calc
-    ptsUse=5;
-    if ix==1
-        phzRefx = angle(c);
-        %middle of max index 
-        phzRef = (phzRefx(indxRef-ptsUse:indxRef+ptsUse));
-        phaseCalc(ix) = 0;
-    else
-        phzCurx = angle(c);
-        %middle of max index 
-        phzCur = (phzCurx(indx-ptsUse:indx+ptsUse));
-        
-        %calc phase diff
-        phzCal = mean(phzCur - phzRef);
-        phaseCalc(ix) = rad2deg(phzCal);
-    end
+    phzCurx = angle(Cn);
+    %middle of max index
+    phzCur = (phzCurx(indx-ptsUse:indx+ptsUse));
+    
+    %calc phase diff
+    phzCal = mean(phzCur - phzRef);
+    phaseCalc(ix) = rad2deg(phzCal);
     
 	%% Freq and phase corrected FID
     fidCor(:,ix) = fid(:,ix).*exp(1i*2*pi*ShiftCalc(ix).*t).*exp(1i*deg2rad(phaseCalc(ix)));
@@ -123,7 +138,7 @@ if plotFlag
     spectfftOrig = fftshift(fft(fid,[],1),1);
     subplot(221), plot(scale_ppmOrig,real(spectfftOrig)); title('Original data');
     set(gca,'xdir','reverse')
-    curAxis=axis; axis([0 5 curAxis(3) curAxis(4)]); useAxis=axis;
+    curAxis=axis; axis([0.5 4.5 curAxis(3) curAxis(4)]); useAxis=axis;
     xlabel('Chemical shift (ppm)')
     %average spectrum
     hold on, plot(scale_ppmOrig,mean(real(spectfftOrig),2),'k','linewidth',2); 
